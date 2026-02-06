@@ -92,13 +92,8 @@ def find_best_k(colours, k_min=2,k_max=15):
             best_k = k
 
     return best_k
+    
 
-def t_or_f(arg):
-    ua = str(arg).upper()
-    if 'TRUE'.startswith(ua):
-       return True
-    elif 'FALSE'.startswith(ua):
-       return False
 
 parser = argparse.ArgumentParser(description="Blob-Erkennung & Farb-Clustering")
 parser.add_argument("--img", type=str, default="./img/FR0P1.jpg", help="Pfad zur Bilddatei")
@@ -106,6 +101,7 @@ parser.add_argument("--dia",type=int, default=70, help="Ungefaehrer Punkturchmes
 parser.add_argument("--debug", action="store_true",help="erkannte Punkte im Monochrombild markieren")
 parser.add_argument("--scale",type=int, default=4,help="Verkleinerungsfaktor")
 parser.add_argument("--csv", action="store_true",help="Erkannte Farben als CSV speichern")
+parser.add_argument("--allpts",action="store_true", help="Gibt gesamte erkannte Farbliste aus")
 
 args = parser.parse_args()
 
@@ -176,10 +172,9 @@ colours= [get_colour(x,y,img_rgb)for (y,x,_) in blobs]
 
 colours = np.array(colours)
 
+best_k = find_best_k(colours, k_min=2, k_max=20)
 
-best_k = find_best_k(colours, k_min=2, k_max=12)
-
-print("Anzahl an erkannten Clustern:", best_k)
+print("Anzahl an erkannten Farben:", best_k)
 
 kmeans = KMeans(n_clusters=best_k,n_init=10, random_state=0)
 labels = kmeans.fit_predict(colours)
@@ -203,16 +198,44 @@ for i in range(best_k):
     txt = f"{tuple(rgb)}"
     print_colour(txt,txt_mono, rgb) """
 
-print("\nCluster (nach Größe sortiert):")
+print("\nFarbcluster (nach Anzahl sortiert):")
+
 order = sorted(range(best_k), key=lambda i: cluster_counts.get(i, 0), reverse=True)
+
 for i in order:
     n = cluster_counts.get(i, 0)
     rgb = cluster_colours_255[i]
     rgb_int = tuple(int(c)for c in rgb)
     rgb_hex = "#{:02X}{:02X}{:02X}".format(*rgb_int)
-    txt_mono=f"Cluster {i:2d}: {n:4d} Punkte | RGB = "
-    txt = f" {tuple(rgb_int)}| HEX= {rgb_hex}"
+    if n == 0:
+        txt_mono = f"Cluster {i:2d}: LEER"
+        txt = f" (leer) | RGB = {rgb_int} | HEX = {rgb_hex}"
+    else:
+        txt_mono = f"Cluster {i:2d}: {n:4d} Punkte | RGB = "
+        txt = f" {tuple(rgb_int)} | HEX= {rgb_hex}"
+
     print_colour(txt,txt_mono, rgb)
+
+if args.allpts:
+    from collections import Counter
+    colours_255 = (colours *255).round().astype(np.uint8)
+
+    rgb_tuples = [tuple(map(int, c)) for c in colours_255]
+    counter = Counter(rgb_tuples)
+
+    print("\nExakte RGB-Werte aller erkannten Punkte (ohne Clustering):")
+    print("--------------------------------------------------------")
+
+    # nach Häufigkeit sortiert
+    for rgb, n in sorted(counter.items(), key=lambda x: x[1], reverse=True):
+        rgb_hex = "#{:02X}{:02X}{:02X}".format(*rgb)
+        txt_mono = f"{n:4d}x RGB = "
+        txt = f"{rgb} | HEX = {rgb_hex}"
+        print_colour(txt, txt_mono, rgb)
+
+    print(f"\nUnterschiedliche RGB-Werte: {len(counter)}")
+    print(f"Gesamtanzahl erkannter Punkte: {len(colours_255)}")
+
 
 #cv2.imshow("Blobs", img_color)
 cv2.waitKey(0)
@@ -225,6 +248,24 @@ if args.debug:
 
 if args.csv:
     timestr = time.strftime("%d%m%Y-%H%M%S")
+
+    if args.allpts:
+        csv_file = f"punkte_rgb_roh-{timestr}.csv"
+
+        from collections import Counter
+        counter = Counter(tuple(map(int, c)) for c in colours_255)
+
+        with open(csv_file, mode='w', newline='') as f:
+            writer = csv.writer(f)
+            writer.writerow(["Anzahl", "R", "G", "B", "HEX"])
+
+            for rgb, n in sorted(counter.items(), key=lambda x: x[1], reverse=True):
+                rgb_hex = "#{:02X}{:02X}{:02X}".format(*rgb)
+                writer.writerow([n, *rgb, rgb_hex])
+
+        print(f"RGB-Rohdaten wurden nach '{csv_file}' exportiert.")
+     
+    
     csv_file = f"cluster_ausgabe-{timestr}.csv"
 
     with open(csv_file, mode='w', newline='') as f:
@@ -241,5 +282,7 @@ if args.csv:
             rgb_hex = "#{:02X}{:02X}{:02X}".format(*rgb_int)
             
             writer.writerow([i, n, *rgb_int, rgb_hex])
+
+    
 
     print(f"Cluster-Daten wurden nach '{csv_file}' exportiert.")
