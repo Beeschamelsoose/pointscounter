@@ -44,8 +44,15 @@ def show_blobs(img, blobs,labels=None, cluster_colours=None, title="Blobs"):
     for i,(y, x, r) in enumerate(blobs):
         if labels is not None and cluster_colours is not None:
             colour = cluster_colours[labels[i]]
+
         else:
             colour = (1,0,0)
+
+        colour = np.array(colour)
+        if colour.max() > 1.0:
+           
+            colour = colour / 255.0
+            
 
         circ = plt.Circle((x, y), r/2, color=colour , fill=True, linewidth=2)
         ax.add_patch(circ)
@@ -92,8 +99,15 @@ def find_best_k(colours, k_min=2,k_max=15):
             best_k = k
 
     return best_k
-    
 
+def quantize_rgb_image(img, step=8):
+    return (img // step) * step
+
+def merge_black(img, thresh=20):
+    mask = (img[..., 0] < thresh) & (img[..., 1] < thresh) & (img[..., 2] < thresh)
+    img = img.copy()
+    img[mask] = (0, 0, 0)
+    return img
 
 parser = argparse.ArgumentParser(description="Blob-Erkennung & Farb-Clustering")
 parser.add_argument("--img", type=str, default="./img/FR0P1.jpg", help="Pfad zur Bilddatei")
@@ -155,6 +169,10 @@ mask[(v >= v_thresh) & (s <= s_thresh)] = 255
 img_cv2 = cv2.bitwise_not(mask)  # Hintergrund schwarz, Blobs hell
 img_mono = mask.astype(np.float32)/255.0
 img_mono_inv = img_cv2.astype(np.float32)/255.0
+
+img_cv2_color = merge_black(img_cv2_color, thresh=20)
+img_cv2_color = quantize_rgb_image(img_cv2_color, step=16)
+
 img_rgb = img_cv2_color.astype(np.float32)/255.0
 
 
