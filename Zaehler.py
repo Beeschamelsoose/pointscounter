@@ -1,98 +1,74 @@
-        import sys, time
-#print(sys.executable)
+#!/usr/bin/env python3
+"""
+Performance-optimierte Streamlit Web-GUI für Zaehler.py / Blob-Analyzer
+- Parallele DoG-Berechnung auf allen CPU-Kernen
+- Extrem schnelles OpenCV-Rendering (statt lahmem Matplotlib)
+- Farbige Vorschau-Kästchen in den Ergebnistabellen
+- Aktualisiert für neuere Streamlit-Versionen (width='stretch')
+"""
 
+import streamlit as st
 import cv2
 import numpy as np
-import matplotlib.pyplot as plt
-from skimage import io, color, filters, exposure
-from skimage.feature import blob_dog, blob_doh
-from skimage.io import imread
-from skimage.transform import resize
-from skimage.util import invert
+import pandas as pd
+from skimage.feature import blob_dog
 from sklearn.cluster import KMeans
 from sklearn.metrics import silhouette_score
-import argparse
-import csv
+from collections import Counter
+from joblib import Parallel, delayed
+import multiprocessing
+import io
+import time
 
-import os
-os.environ["QT_LOGGING_RULES"] = "*.debug=false;*.warning=false"
+# Page config
+st.set_page_config(
+    page_title="Blob- & Farbzähler (High-Performance)",
+    page_icon="⚡",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
 
+# ===== HILFSFUNKTIONEN =====
 
+def quantize_rgb_image(img, step=16):
+    return (img // step) * step
 
-def blobs_erkennen(img,min_sigma,max_sigma,thresh):
-    blobs_dog = blob_dog(
-        img,
-        min_sigma=min_sigma,
-        max_sigma=max_sigma,
-        threshold=thresh
-    ) 
-    blobs_dog[:, 2] *= np.sqrt(2)
-    return blobs_dog
+def merge_black(img, thresh=20):
+    mask = (img[..., 0] < thresh) & (img[..., 1] < thresh) & (img[..., 2] < thresh)
+    img_copy = img.copy()
+    img_copy[mask] = (0, 0, 0)
+    return img_copy
 
-
-def show_blobs(img, blobs,labels=None, cluster_colours=None, title="Blobs"):
-    """
-    Zeigt die Blobs an. 
-    Wenn labels + cluster_colors gegeben, werden die Blobs in Clusterfarbe angezeigt.
-    
-    blobs: Array (y,x,r)
-    labels: Array der Clusterzuordnung pro Blob
-    cluster_colors: Array (n_clusters, 3), Werte 0..255
-    """
-    fig, ax = plt.subplots(figsize=(6,6))
-    ax.imshow(img, cmap="gray")
-    for i,(y, x, r) in enumerate(blobs):
-        if labels is not None and cluster_colours is not None:
-            colour = cluster_colours[labels[i]]
-
-        else:
-            colour = (1,0,0)
-
-        colour = np.array(colour)
-        if colour.max() > 1.0:
-           
-            colour = colour / 255.0
-            
-
-        circ = plt.Circle((x, y), r/2, color=colour , fill=True, linewidth=2)
-        ax.add_patch(circ)
-    ax.set_title(title)
-    ax.axis("off")
-    return
-
-def show_img(img,title,cmap):
-    fig, ax = plt.subplots(figsize=(6,6))
-    ax.imshow(img,cmap=cmap)
-    ax.set_title(title)
-    ax.axis("off")
-    return
-
-def get_colour(x,y,img,r=2):
-    y = int(round(y))
-    x = int(round(x))
+def get_colour_vectorized(blobs, img, r=2):
+    """ Vektorisierte Farbentnahme für extrem schnelles Auslesen """
     H, W = img.shape[:2]
+    colours = []
+    for y, x, _ in blobs:
+        y_i, x_i = int(round(y)), int(round(x))
+        y0, y1 = max(0, y_i - r), min(H, y_i + r + 1)
+        x0, x1 = max(0, x_i - r), min(W, x_i + r + 1)
+        colours.append(img[y0:y1, x0:x1].mean(axis=(0, 1)))
+    return np.array(colours)
 
-    y0, y1 = max(0, y-r), min(H, y+r+1)
-    x0, x1 = max(0, x-r), min(W, x+r+1)
-
-    patch = img[y0:y1, x0:x1]
-    return patch.mean(axis=(0, 1))
-
-def print_colour(text,mono, rgb):
-    r,g,b = map(int,rgb)
-    print(f"{mono}\033[38;2;{r};{g};{b}m{text}\033[0m")
-    return
-
-def find_best_k(colours, k_min=2,k_max=15):
+def find_best_k(colours, k_min=2, k_max=20):
     best_k = k_min
     best_score = -1
+    
+    # Subsampling bei sehr vielen Punkten für schnelles Silhouette-Clustering
+    if len(colours) > 1000:
+        idx = np.random.choice(len(colours), 1000, replace=False)
+        sample_colours = colours[idx]
+    else:
+        sample_colours = colours
 
-    for k in range(k_min, k_max + 1):
-        kmeans = KMeans(n_clusters=k, n_init=10, random_state=0)
-        labels = kmeans.fit_predict(colours)
-        score = silhouette_score(colours, labels)
-        if args.debug:
-            print(f"k={k:2d} | Silhouette-Score = {score:.3f}")
+    max_k = min(k_max, len(sample_colours) - 1)
+    if max_k <= k_min:
+        return k_min
+
+    for k in range(k_min, max_k + 1):
+        kmeans = KMeans(n_clusters=k, n_init=5, random_state=0)
+        labels = kmeans.fit_predict(sample_colours)
+        score = silhouette_score(sample_colours, labels)
 
         if score > best_score:
             best_score = score
@@ -100,207 +76,300 @@ def find_best_k(colours, k_min=2,k_max=15):
 
     return best_k
 
-def quantize_rgb_image(img, step=8):
-    return (img // step) * step
+def run_blob_dog_single_tile(tile, min_sigma, max_sigma, threshold, y_offset, x_offset):
+    """ Führt DoG auf einer Bild-Kachel aus """
+    blobs = blob_dog(tile, min_sigma=min_sigma, max_sigma=max_sigma, threshold=threshold)
+    if blobs.shape[0] > 0:
+        blobs[:, 0] += y_offset
+        blobs[:, 1] += x_offset
+    return blobs
 
-def merge_black(img, thresh=20):
-    mask = (img[..., 0] < thresh) & (img[..., 1] < thresh) & (img[..., 2] < thresh)
-    img = img.copy()
-    img[mask] = (0, 0, 0)
-    return img
+def parallel_blob_dog(img, min_sigma, max_sigma, threshold, n_jobs=-1):
+    """ Parallelisiert die DoG-Gitter-Berechnung auf alle CPU-Kerne """
+    if n_jobs == -1:
+        n_jobs = multiprocessing.cpu_count()
 
-parser = argparse.ArgumentParser(description="Blob-Erkennung & Farb-Clustering")
-parser.add_argument("--img", type=str, default="./img/FR0P1.jpg", help="Pfad zur Bilddatei")
-parser.add_argument("--dia",type=int, default=70, help="Ungefaehrer Punkturchmesser")
-parser.add_argument("--debug", action="store_true",help="erkannte Punkte im Monochrombild markieren")
-parser.add_argument("--scale",type=int, default=4,help="Verkleinerungsfaktor")
-parser.add_argument("--csv", action="store_true",help="Erkannte Farben als CSV speichern")
-parser.add_argument("--allpts",action="store_true", help="Gibt gesamte erkannte Farbliste aus")
+    # Falls das Bild sehr klein ist oder nur 1 Core vorhanden ist
+    if n_jobs == 1 or img.shape[0] < 200 or img.shape[1] < 200:
+        blobs = blob_dog(img, min_sigma=min_sigma, max_sigma=max_sigma, threshold=threshold)
+        if blobs.shape[0] > 0:
+            blobs[:, 2] *= np.sqrt(2)
+        return blobs
 
-args = parser.parse_args()
+    # Bild in Kacheln zerlegen
+    n_splits = int(np.ceil(np.sqrt(n_jobs)))
+    h, w = img.shape
+    dh = int(np.ceil(h / n_splits))
+    dw = int(np.ceil(w / n_splits))
 
-img_path= args.img
-diameter=args.dia
+    # Überlappung (Padding) damit Punkte an Schnittkanten nicht verloren gehen
+    pad = int(max_sigma * 3)
 
+    tasks = []
+    for i in range(n_splits):
+        for j in range(n_splits):
+            y0, y1 = i * dh, min((i + 1) * dh, h)
+            x0, x1 = j * dw, min((j + 1) * dw, w)
 
-if args.img is None:
-    img_path = str(input("Pfad zum Bild:"))
-else:
-    img_path = args.img
+            y0_pad, y1_pad = max(0, y0 - pad), min(h, y1 + pad)
+            x0_pad, x1_pad = max(0, x0 - pad), min(w, x1 + pad)
 
-scale=1/args.scale
-v_thresh=254
-s_thresh=25
+            tile = img[y0_pad:y1_pad, x0_pad:x1_pad]
+            tasks.append((tile, min_sigma, max_sigma, threshold, y0_pad, x0_pad))
 
-dia_min= diameter*0.8/2
-dia_max=diameter*1.1/2
-min_sigma = dia_min/(np.sqrt(2)) * scale
-max_sigma = dia_max/(np.sqrt(2)) * scale
+    results = Parallel(n_jobs=n_jobs)(
+        delayed(run_blob_dog_single_tile)(t, ms, Ms, th, yo, xo)
+        for t, ms, Ms, th, yo, xo in tasks
+    )
 
+    all_blobs = [b for b in results if b.shape[0] > 0]
+    if not all_blobs:
+        return np.empty((0, 3))
 
-print("Parameter:")
-print("Bild:", img_path)
-print("Punktgroesse:",diameter)
-print("Verkleinerungsfaktor:",args.scale,"x")
-if args.debug:
-    print("Debug-Modus aktiv")
+    blobs = np.vstack(all_blobs)
 
-    print(f'Minimaler Punktdurchmesser(skaliert):{dia_min}')
-    print(f'Maximaler Punktdurchmesser(skaliert):{dia_max}')
+    # Duplikate durch Overlap entfernen
+    if len(blobs) > 0:
+        keep = []
+        spatial_tree = {}
+        for idx, (y, x, r) in enumerate(blobs):
+            key = (int(y // (pad/2)), int(x // (pad/2)))
+            if key not in spatial_tree:
+                spatial_tree[key] = (y, x)
+                keep.append(idx)
+        blobs = blobs[keep]
 
+    blobs[:, 2] *= np.sqrt(2)
+    return blobs
 
-img=cv2.imread(img_path)
-
-h,w = img.shape[:2]
-
-img_resized = cv2.resize(img, (int(w*scale), int(h*scale)), interpolation=cv2.INTER_NEAREST)
-img_cv2_color= cv2.cvtColor(img_resized, cv2.COLOR_BGR2RGB)
-img_hsv = cv2.cvtColor(img_resized, cv2.COLOR_BGR2HSV)
-
-h,s,v = cv2.split(img_hsv)
-
-mask = np.zeros_like(v, dtype=np.uint8)
-
-mask[(v >= v_thresh) & (s <= s_thresh)] = 255
-
-
-#v[v < 254] = 0 
-
-img_cv2 = cv2.bitwise_not(mask)  # Hintergrund schwarz, Blobs hell
-img_mono = mask.astype(np.float32)/255.0
-img_mono_inv = img_cv2.astype(np.float32)/255.0
-
-img_cv2_color = merge_black(img_cv2_color, thresh=20)
-img_cv2_color = quantize_rgb_image(img_cv2_color, step=16)
-
-img_rgb = img_cv2_color.astype(np.float32)/255.0
-
-
-    
-#plt.imshow(img_mono_inv,cmap='gray')
-
-start=time.time_ns()
-blobs = blobs_erkennen(img_mono_inv,min_sigma=min_sigma,max_sigma=max_sigma,thresh=0.02)
-if args.debug:
-    print("DoG time: {:.2f}s".format((time.time_ns()-start)/1e9))
-
-print(f'Anzahl an Erkannten Punkten: {blobs.shape[0]}')
-
-colours= [get_colour(x,y,img_rgb)for (y,x,_) in blobs]
-
-colours = np.array(colours)
-
-best_k = find_best_k(colours, k_min=2, k_max=20)
-
-print("Anzahl an erkannten Farben:", best_k)
-
-kmeans = KMeans(n_clusters=best_k,n_init=10, random_state=0)
-labels = kmeans.fit_predict(colours)
-
-clustered_blobs = {i: []for i in range(best_k)}
-
-for (x,y,sigma), label in zip(blobs, labels):
-    clustered_blobs[label].append((y,x,sigma))
-
-cluster_colours = kmeans.cluster_centers_
-cluster_colours_255 = (cluster_colours*255).round().astype(np.uint8) 
-
-unique, counts = np.unique(labels, return_counts=True)
-cluster_counts = dict(zip(unique, counts))
-
-""" print("\nCluster-Overview:")
-for i in range(best_k):
-    n = cluster_counts.get(i, 0)
-    rgb = cluster_colours_255[i]
-    txt_mono=f"Cluster {i:2d}: {n:4d} Punkte | RGB = "
-    txt = f"{tuple(rgb)}"
-    print_colour(txt,txt_mono, rgb) """
-
-print("\nFarbcluster (nach Anzahl sortiert):")
-
-order = sorted(range(best_k), key=lambda i: cluster_counts.get(i, 0), reverse=True)
-
-for i in order:
-    n = cluster_counts.get(i, 0)
-    rgb = cluster_colours_255[i]
-    rgb_int = tuple(int(c)for c in rgb)
-    rgb_hex = "#{:02X}{:02X}{:02X}".format(*rgb_int)
-    if n == 0:
-        txt_mono = f"Cluster {i:2d}: LEER"
-        txt = f" (leer) | RGB = {rgb_int} | HEX = {rgb_hex}"
+def render_blobs_opencv(img_bg, blobs, labels, cluster_colours_255):
+    """ Extrem schnelles Zeichnen der Punkte mit OpenCV """
+    if len(img_bg.shape) == 2:
+        img_out = cv2.cvtColor((img_bg * 255).astype(np.uint8), cv2.COLOR_GRAY2BGR)
     else:
-        txt_mono = f"Cluster {i:2d}: {n:4d} Punkte | RGB = "
-        txt = f" {tuple(rgb_int)} | HEX= {rgb_hex}"
+        img_out = (img_bg * 255).astype(np.uint8)
 
-    print_colour(txt,txt_mono, rgb)
+    for i, (y, x, r) in enumerate(blobs):
+        pt_center = (int(round(x)), int(round(y)))
+        radius = max(1, int(round(r / 2)))
+        
+        if labels is not None and cluster_colours_255 is not None:
+            c = cluster_colours_255[labels[i]]
+            color_bgr = (int(c[2]), int(c[1]), int(c[0]))  # RGB -> BGR für OpenCV
+        else:
+            color_bgr = (0, 0, 255)  # Rot
 
-if args.allpts:
-    from collections import Counter
-    colours_255 = (colours *255).round().astype(np.uint8)
+        cv2.circle(img_out, pt_center, radius, color_bgr, -1, lineType=cv2.LINE_AA)
+        
+    return cv2.cvtColor(img_out, cv2.COLOR_BGR2RGB)
 
-    rgb_tuples = [tuple(map(int, c)) for c in colours_255]
-    counter = Counter(rgb_tuples)
+# ===== MAIN APP =====
 
-    print("\nExakte RGB-Werte aller erkannten Punkte (ohne Clustering):")
-    print("--------------------------------------------------------")
+st.title("🔬 Blob- & Farbzähler (High-Performance)")
 
-    # nach Häufigkeit sortiert
-    for rgb, n in sorted(counter.items(), key=lambda x: x[1], reverse=True):
-        rgb_hex = "#{:02X}{:02X}{:02X}".format(*rgb)
-        txt_mono = f"{n:4d}x RGB = "
-        txt = f"{rgb} | HEX = {rgb_hex}"
-        print_colour(txt, txt_mono, rgb)
+# SIDEBAR
+st.sidebar.header("⚙️ Einstellungen")
+uploaded_file = st.sidebar.file_uploader("📤 Bild hochladen", type=["jpg", "jpeg", "png", "bmp", "tiff"])
 
-    print(f"\nUnterschiedliche RGB-Werte: {len(counter)}")
-    print(f"Gesamtanzahl erkannter Punkte: {len(colours_255)}")
+st.sidebar.subheader("Verkleinerung & Multiprocessing")
+scale_factor = st.sidebar.slider("Verkleinerungsfaktor (x)", min_value=1, max_value=8, value=4, step=1)
+cpu_cores = multiprocessing.cpu_count()
+n_jobs = st.sidebar.slider("Parallel-Cores (CPU)", min_value=1, max_value=cpu_cores, value=cpu_cores)
+
+st.sidebar.subheader("Blob-Erkennung")
+diameter = st.sidebar.slider("Punkt-Durchmesser (px)", min_value=2, max_value=200, value=70, step=1)
+dog_threshold = st.sidebar.slider("DoG-Schwellenwert (thresh)", min_value=0.001, max_value=0.100, value=0.020, step=0.005, format="%.3f")
+
+st.sidebar.subheader("Farbdetection (HSV)")
+v_thresh = st.sidebar.slider("Min. Helligkeit (V)", min_value=0, max_value=255, value=255, step=1)
+s_thresh = st.sidebar.slider("Max. Sättigung (S)", min_value=0, max_value=255, value=25, step=1)
+
+st.sidebar.subheader("Clustering")
+fixed_k = st.sidebar.number_input("Anzahl Farben / K (0 = Auto)", min_value=0, max_value=30, value=0, step=1)
+show_all_pts = st.sidebar.checkbox("Alle ungeclusterten RGB-Rohwerte anzeigen", value=False)
 
 
-#cv2.imshow("Blobs", img_color)
-cv2.waitKey(0)
-cv2.destroyAllWindows()
+if uploaded_file is not None:
+    uploaded_file.seek(0)
+    file_bytes = np.asarray(bytearray(uploaded_file.read()), dtype=np.uint8)
+    img = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
 
-#show_img(img_hsv,'IMG_HSV')
-if args.debug:
-    show_blobs(img_mono_inv,blobs,labels=labels, cluster_colours=cluster_colours,title='Punkterkennung:')
-    plt.show()
+    if img is None:
+        st.error("❌ Bilddatei konnte nicht gelesen werden.")
+    else:
+        h_orig, w_orig = img.shape[:2]
 
-if args.csv:
-    timestr = time.strftime("%d%m%Y-%H%M%S")
+        col1, col2 = st.columns([1, 1])
+        with col1:
+            st.subheader("📸 Original-Bild")
+            st.image(cv2.cvtColor(img, cv2.COLOR_BGR2RGB), width="stretch")
 
-    if args.allpts:
-        csv_file = f"punkte_rgb_roh-{timestr}.csv"
+        with col2:
+            st.subheader("📊 Bild- & System-Info")
+            st.markdown(f"""
+            - **Dateiname:** {uploaded_file.name}
+            - **Original:** {w_orig} × {h_orig} px
+            - **Arbeitsgröße:** {int(w_orig / scale_factor)} × {int(h_orig / scale_factor)} px
+            - **Verfügbare CPU-Kerne:** {cpu_cores} (genutzt: {n_jobs})
+            """)
 
-        from collections import Counter
-        counter = Counter(tuple(map(int, c)) for c in colours_255)
+        if st.button("▶ ANALYSE STARTEN", key="analyze", width="stretch"):
+            with st.spinner(f"⏳ Analysiere Bild parallel auf {n_jobs} CPU-Kernen..."):
+                start_time = time.time()
 
-        with open(csv_file, mode='w', newline='') as f:
-            writer = csv.writer(f)
-            writer.writerow(["Anzahl", "R", "G", "B", "HEX"])
+                # 1. Rescale
+                scale = 1.0 / scale_factor
+                img_resized = cv2.resize(img, (int(w_orig * scale), int(h_orig * scale)), interpolation=cv2.INTER_NEAREST)
 
-            for rgb, n in sorted(counter.items(), key=lambda x: x[1], reverse=True):
-                rgb_hex = "#{:02X}{:02X}{:02X}".format(*rgb)
-                writer.writerow([n, *rgb, rgb_hex])
+                # 2. HSV & Monochrom Masking
+                img_cv2_color = cv2.cvtColor(img_resized, cv2.COLOR_BGR2RGB)
+                img_hsv = cv2.cvtColor(img_resized, cv2.COLOR_BGR2HSV)
+                _, s_ch, v_ch = cv2.split(img_hsv)
 
-        print(f"RGB-Rohdaten wurden nach '{csv_file}' exportiert.")
-     
-    
-    csv_file = f"cluster_ausgabe-{timestr}.csv"
+                mask = np.zeros_like(v_ch, dtype=np.uint8)
+                mask[(v_ch >= v_thresh) & (s_ch <= s_thresh)] = 255
 
-    with open(csv_file, mode='w', newline='') as f:
-        writer = csv.writer(f)
+                img_cv2 = cv2.bitwise_not(mask)
+                img_mono_inv = img_cv2.astype(np.float32) / 255.0
 
-        # Header
-        writer.writerow(["ClusterID", "AnzahlPunkte", "R", "G", "B", "HEX"])
+                # Color Prep
+                img_cv2_color = merge_black(img_cv2_color, thresh=20)
+                img_cv2_color = quantize_rgb_image(img_cv2_color, step=16)
+                img_rgb = img_cv2_color.astype(np.float32) / 255.0
 
-        # Daten schreiben
-        for i in order:
-            n = len(clustered_blobs[i])
-            rgb = cluster_colours_255[i]
-            rgb_int = tuple(int(c) for c in rgb)
-            rgb_hex = "#{:02X}{:02X}{:02X}".format(*rgb_int)
-            
-            writer.writerow([i, n, *rgb_int, rgb_hex])
+                # 3. Parallelized Blob Detection
+                dia_min = diameter * 0.8 / 2
+                dia_max = diameter * 1.1 / 2
+                min_sigma = dia_min / (np.sqrt(2)) * scale
+                max_sigma = dia_max / (np.sqrt(2)) * scale
 
-    
+                blobs = parallel_blob_dog(
+                    img_mono_inv,
+                    min_sigma=min_sigma,
+                    max_sigma=max_sigma,
+                    threshold=dog_threshold,
+                    n_jobs=n_jobs
+                )
 
-    print(f"Cluster-Daten wurden nach '{csv_file}' exportiert.")
+                if blobs.shape[0] == 0:
+                    st.error("❌ Keine Punkte erkannt! Bitte Parameter anpassen.")
+                    st.session_state.pop("analysis_results", None)
+                else:
+                    # 4. Color Extraction & Clustering
+                    colours = get_colour_vectorized(blobs, img_rgb, r=2)
+
+                    if fixed_k > 0:
+                        best_k = fixed_k
+                    else:
+                        best_k = find_best_k(colours, k_min=2, k_max=20)
+
+                    kmeans = KMeans(n_clusters=best_k, n_init=10, random_state=0)
+                    labels = kmeans.fit_predict(colours)
+
+                    cluster_colours = kmeans.cluster_centers_
+                    cluster_colours_255 = (cluster_colours * 255).round().astype(np.uint8)
+
+                    elapsed = time.time() - start_time
+
+                    st.session_state["analysis_results"] = {
+                        "blobs": blobs,
+                        "best_k": best_k,
+                        "elapsed": elapsed,
+                        "labels": labels,
+                        "cluster_colours_255": cluster_colours_255,
+                        "colours": colours,
+                        "img_mono_inv": img_mono_inv
+                    }
+
+        # ERGEBNIS-AUSGABE
+        if "analysis_results" in st.session_state:
+            res = st.session_state["analysis_results"]
+            blobs = res["blobs"]
+            best_k = res["best_k"]
+            elapsed = res["elapsed"]
+            labels = res["labels"]
+            cluster_colours_255 = res["cluster_colours_255"]
+            colours = res["colours"]
+            img_mono_inv = res["img_mono_inv"]
+
+            st.success(f"⚡ Analyse abgeschlossen in nur **{elapsed:.2f} Sekunden**!")
+
+            c1, c2, c3 = st.columns(3)
+            c1.metric("🎯 Erkannte Punkte", f"{blobs.shape[0]:,}")
+            c2.metric("🎨 Farbklassen", f"{best_k}")
+            c3.metric("⏱️ Laufzeit", f"{elapsed:.2f} s")
+
+            col_left, col_right = st.columns([1, 1])
+
+            with col_left:
+                st.subheader("📍 Schnelle Vorschau (OpenCV)")
+                rendered_img = render_blobs_opencv(img_mono_inv, blobs, labels, cluster_colours_255)
+                st.image(rendered_img, width="stretch")
+
+            with col_right:
+                st.subheader("🎨 Farbcluster (mit Farbfeldern)")
+                unique, counts = np.unique(labels, return_counts=True)
+                cluster_counts = dict(zip(unique, counts))
+                order = sorted(range(best_k), key=lambda i: cluster_counts.get(i, 0), reverse=True)
+
+                cluster_data = []
+                for i in order:
+                    n = cluster_counts.get(i, 0)
+                    rgb = cluster_colours_255[i]
+                    rgb_tuple = (int(rgb[0]), int(rgb[1]), int(rgb[2]))
+                    rgb_hex = "#{:02X}{:02X}{:02X}".format(*rgb_tuple)
+
+                    cluster_data.append({
+                        "Cluster ID": i,
+                        "Anzahl Punkte": n,
+                        "Farbe (HEX)": rgb_hex,
+                        "RGB Code": f"rgb{rgb_tuple}",
+                        "Anteil": f"{(100 * n / blobs.shape[0]):.2f} %"
+                    })
+
+                df_clusters = pd.DataFrame(cluster_data)
+
+                def style_color_column(val):
+                    if isinstance(val, str) and val.startswith("#"):
+                        hex_val = val.lstrip("#")
+                        r, g, b = tuple(int(hex_val[i:i+2], 16) for i in (0, 2, 4))
+                        yiq = ((r * 299) + (g * 587) + (b * 114)) / 1000
+                        text_color = "#000000" if yiq >= 128 else "#FFFFFF"
+                        return f"background-color: {val}; color: {text_color}; font-weight: bold; text-align: center;"
+                    return ""
+
+                styled_df = df_clusters.style.map(style_color_column, subset=["Farbe (HEX)"])
+                st.dataframe(styled_df, width="stretch")
+
+                # CSV Download
+                csv_buffer = io.StringIO()
+                df_clusters.to_csv(csv_buffer, index=False)
+                st.download_button(
+                    label="💾 Cluster-Ergebnisse als CSV",
+                    data=csv_buffer.getvalue(),
+                    file_name=f"cluster_ausgabe_{time.strftime('%Y%m%d_%H%M%S')}.csv",
+                    mime="text/csv",
+                    width="stretch"
+                )
+
+            if show_all_pts:
+                st.subheader("📋 Ungeclusterte RGB-Rohdaten")
+                colours_255 = (colours * 255).round().astype(np.uint8)
+                rgb_tuples = [tuple(map(int, c)) for c in colours_255]
+                counter = Counter(rgb_tuples)
+
+                raw_data = []
+                for rgb, n in sorted(counter.items(), key=lambda x: x[1], reverse=True):
+                    rgb_hex = "#{:02X}{:02X}{:02X}".format(*rgb)
+                    raw_data.append({
+                        "Anzahl": n,
+                        "Farbe (HEX)": rgb_hex,
+                        "R": rgb[0], "G": rgb[1], "B": rgb[2]
+                    })
+
+                df_raw = pd.DataFrame(raw_data)
+                styled_df_raw = df_raw.style.map(style_color_column, subset=["Farbe (HEX)"])
+                st.dataframe(styled_df_raw, width="stretch")
+
+else:
+    st.info("Bitte lade in der linken Seitenleiste ein Bild hoch, um die geglättete Analyse zu starten.")
