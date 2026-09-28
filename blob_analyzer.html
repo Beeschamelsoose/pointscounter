@@ -1,0 +1,672 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Blob Analyzer GUI</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/opencv.js/4.5.2/opencv.min.js"></script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+        
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 15px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+            overflow: hidden;
+        }
+        
+        .header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 30px;
+            text-align: center;
+        }
+        
+        .header h1 {
+            font-size: 2.5em;
+            margin-bottom: 10px;
+        }
+        
+        .header p {
+            opacity: 0.9;
+            font-size: 1.1em;
+        }
+        
+        .content {
+            display: grid;
+            grid-template-columns: 350px 1fr;
+            gap: 0;
+            min-height: 600px;
+        }
+        
+        .sidebar {
+            background: #f8f9fa;
+            padding: 30px;
+            border-right: 1px solid #e0e0e0;
+            overflow-y: auto;
+            max-height: 800px;
+        }
+        
+        .main {
+            padding: 30px;
+            overflow-y: auto;
+        }
+        
+        .section {
+            margin-bottom: 25px;
+        }
+        
+        .section-title {
+            font-size: 1.1em;
+            font-weight: 600;
+            color: #333;
+            margin-bottom: 15px;
+            padding-bottom: 10px;
+            border-bottom: 2px solid #667eea;
+        }
+        
+        .form-group {
+            margin-bottom: 15px;
+        }
+        
+        label {
+            display: block;
+            font-size: 0.95em;
+            font-weight: 500;
+            margin-bottom: 8px;
+            color: #444;
+        }
+        
+        input[type="file"] {
+            display: block;
+            width: 100%;
+            padding: 10px;
+            border: 2px dashed #667eea;
+            border-radius: 8px;
+            cursor: pointer;
+            background: #f0f4ff;
+        }
+        
+        input[type="file"]:hover {
+            background: #e8ecff;
+        }
+        
+        input[type="range"],
+        input[type="number"] {
+            width: 100%;
+            padding: 8px;
+            border: 1px solid #ddd;
+            border-radius: 6px;
+            font-size: 0.95em;
+        }
+        
+        .range-value {
+            display: inline-block;
+            background: #667eea;
+            color: white;
+            padding: 4px 12px;
+            border-radius: 20px;
+            font-size: 0.85em;
+            font-weight: 600;
+            margin-left: 10px;
+        }
+        
+        .button-group {
+            display: flex;
+            gap: 10px;
+            margin-top: 20px;
+        }
+        
+        button {
+            flex: 1;
+            padding: 12px 20px;
+            border: none;
+            border-radius: 8px;
+            font-size: 1em;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s ease;
+        }
+        
+        .btn-primary {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+        }
+        
+        .btn-primary:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 10px 20px rgba(102, 126, 234, 0.3);
+        }
+        
+        .btn-primary:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+            transform: none;
+        }
+        
+        .btn-secondary {
+            background: #e0e0e0;
+            color: #333;
+        }
+        
+        .btn-secondary:hover {
+            background: #d0d0d0;
+        }
+        
+        .checkbox-group {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        
+        input[type="checkbox"] {
+            width: 20px;
+            height: 20px;
+            cursor: pointer;
+        }
+        
+        .checkbox-group label {
+            margin: 0;
+            cursor: pointer;
+            flex: 1;
+        }
+        
+        /* Preview */
+        .preview-box {
+            background: #f0f0f0;
+            border-radius: 10px;
+            padding: 20px;
+            margin-bottom: 20px;
+            text-align: center;
+            border: 2px dashed #ddd;
+        }
+        
+        .preview-box img {
+            max-width: 100%;
+            max-height: 400px;
+            border-radius: 8px;
+            box-shadow: 0 5px 15px rgba(0,0,0,0.1);
+        }
+        
+        .info-box {
+            background: #e8f4f8;
+            border-left: 4px solid #667eea;
+            padding: 15px;
+            border-radius: 6px;
+            margin-bottom: 20px;
+            font-size: 0.95em;
+            line-height: 1.6;
+        }
+        
+        .results {
+            margin-top: 20px;
+        }
+        
+        .results-table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 15px;
+            font-size: 0.95em;
+        }
+        
+        .results-table th {
+            background: #667eea;
+            color: white;
+            padding: 12px;
+            text-align: left;
+            font-weight: 600;
+        }
+        
+        .results-table td {
+            padding: 12px;
+            border-bottom: 1px solid #eee;
+        }
+        
+        .results-table tbody tr:hover {
+            background: #f8f9fa;
+        }
+        
+        .color-swatch {
+            display: inline-block;
+            width: 30px;
+            height: 30px;
+            border-radius: 6px;
+            border: 1px solid #999;
+            vertical-align: middle;
+            margin-right: 8px;
+        }
+        
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 15px;
+            margin: 20px 0;
+        }
+        
+        .stat-card {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 20px;
+            border-radius: 10px;
+            text-align: center;
+        }
+        
+        .stat-value {
+            font-size: 2em;
+            font-weight: 700;
+            margin: 10px 0;
+        }
+        
+        .stat-label {
+            font-size: 0.9em;
+            opacity: 0.9;
+        }
+        
+        .hidden {
+            display: none;
+        }
+        
+        .loading {
+            text-align: center;
+            padding: 20px;
+        }
+        
+        .spinner {
+            border: 4px solid #f3f3f3;
+            border-top: 4px solid #667eea;
+            border-radius: 50%;
+            width: 40px;
+            height: 40px;
+            animation: spin 1s linear infinite;
+            margin: 0 auto 15px;
+        }
+        
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+        
+        .error {
+            background: #ffebee;
+            color: #c62828;
+            padding: 15px;
+            border-radius: 8px;
+            margin: 15px 0;
+            border-left: 4px solid #c62828;
+        }
+        
+        .success {
+            background: #e8f5e9;
+            color: #2e7d32;
+            padding: 15px;
+            border-radius: 8px;
+            margin: 15px 0;
+            border-left: 4px solid #2e7d32;
+        }
+        
+        @media (max-width: 900px) {
+            .content {
+                grid-template-columns: 1fr;
+            }
+            
+            .sidebar {
+                border-right: none;
+                border-bottom: 1px solid #e0e0e0;
+                max-height: none;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🔬 Blob Analyzer</h1>
+            <p>Erkennung von Kristall-Punkten und Farb-Clustering</p>
+        </div>
+        
+        <div class="content">
+            <!-- SIDEBAR -->
+            <div class="sidebar">
+                <!-- Datei Upload -->
+                <div class="section">
+                    <div class="section-title">📤 Bild</div>
+                    <div class="form-group">
+                        <input type="file" id="imageInput" accept="image/*">
+                    </div>
+                    <div id="imagePreview" class="preview-box hidden">
+                        <img id="previewImg" src="" alt="Vorschau">
+                    </div>
+                </div>
+                
+                <!-- Blob-Parameter -->
+                <div class="section">
+                    <div class="section-title">🎯 Blob-Erkennung</div>
+                    
+                    <div class="form-group">
+                        <label for="diameter">
+                            Punkt-Durchmesser (px)
+                            <span class="range-value" id="diameterValue">8</span>
+                        </label>
+                        <input type="range" id="diameter" min="2" max="30" value="8">
+                    </div>
+                    
+                    <div class="form-group">
+                        <label for="scale">
+                            Skalierung (1/x)
+                            <span class="range-value" id="scaleValue">4</span>
+                        </label>
+                        <input type="range" id="scale" min="1" max="8" value="4">
+                    </div>
+                </div>
+                
+                <!-- Farb-Parameter -->
+                <div class="section">
+                    <div class="section-title">🎨 Farbdetection</div>
+                    
+                    <div class="form-group">
+                        <label for="vThresh">
+                            Min. Helligkeit (V)
+                            <span class="range-value" id="vValue">200</span>
+                        </label>
+                        <input type="range" id="vThresh" min="50" max="255" value="200" step="10">
+                    </div>
+                    
+                    <div class="form-group">
+                        <label for="sThresh">
+                            Max. Sättigung (S)
+                            <span class="range-value" id="sValue">50</span>
+                        </label>
+                        <input type="range" id="sThresh" min="0" max="100" value="50" step="5">
+                    </div>
+                </div>
+                
+                <!-- Clustering -->
+                <div class="section">
+                    <div class="section-title">⚙️ Clustering</div>
+                    
+                    <div class="form-group">
+                        <label for="fixedK">
+                            Farb-Anzahl (0=Auto)
+                            <span class="range-value" id="kValue">0</span>
+                        </label>
+                        <input type="number" id="fixedK" min="0" max="30" value="0">
+                    </div>
+                    
+                    <div class="form-group checkbox-group">
+                        <input type="checkbox" id="showAll">
+                        <label for="showAll">Alle Farben anzeigen</label>
+                    </div>
+                </div>
+                
+                <!-- Buttons -->
+                <div class="button-group">
+                    <button id="analyzeBtn" class="btn-primary">▶ Analysieren</button>
+                </div>
+            </div>
+            
+            <!-- MAIN CONTENT -->
+            <div class="main">
+                <div id="welcomeInfo" class="info-box">
+                    <strong>📖 Anleitung:</strong><br>
+                    1. Wähle ein Bild mit Punkten<br>
+                    2. Stelle die Parameter ein<br>
+                    3. Klicke "Analysieren"<br>
+                    4. Ergebnisse werden hier angezeigt
+                </div>
+                
+                <div id="results" class="hidden">
+                    <div id="statsGrid" class="stats-grid"></div>
+                    
+                    <div class="section">
+                        <h2>🎨 Farbcluster</h2>
+                        <table class="results-table" id="resultsTable">
+                            <thead>
+                                <tr>
+                                    <th>Cluster</th>
+                                    <th>Farbe</th>
+                                    <th>RGB</th>
+                                    <th>HEX</th>
+                                    <th>Anzahl</th>
+                                    <th>Prozent</th>
+                                </tr>
+                            </thead>
+                            <tbody id="tableBody"></tbody>
+                        </table>
+                    </div>
+                    
+                    <div class="button-group" style="margin-top: 20px;">
+                        <button id="downloadBtn" class="btn-secondary">📊 CSV Download</button>
+                        <button id="resetBtn" class="btn-secondary">🔄 Zurücksetzen</button>
+                    </div>
+                </div>
+                
+                <div id="loading" class="loading hidden">
+                    <div class="spinner"></div>
+                    <p>Analysiere Bild...</p>
+                </div>
+                
+                <div id="errorContainer"></div>
+            </div>
+        </div>
+    </div>
+    
+    <script>
+        // App State
+        const state = {
+            image: null,
+            imageData: null,
+            results: null
+        };
+        
+        // DOM Elements
+        const imageInput = document.getElementById('imageInput');
+        const previewImg = document.getElementById('previewImg');
+        const previewBox = document.getElementById('imagePreview');
+        const analyzeBtn = document.getElementById('analyzeBtn');
+        const downloadBtn = document.getElementById('downloadBtn');
+        const resetBtn = document.getElementById('resetBtn');
+        
+        const diameterSlider = document.getElementById('diameter');
+        const scaleSlider = document.getElementById('scale');
+        const vThreshSlider = document.getElementById('vThresh');
+        const sThreshSlider = document.getElementById('sThresh');
+        const fixedKInput = document.getElementById('fixedK');
+        
+        // Update display values
+        diameterSlider.addEventListener('input', (e) => {
+            document.getElementById('diameterValue').textContent = e.target.value;
+        });
+        scaleSlider.addEventListener('input', (e) => {
+            document.getElementById('scaleValue').textContent = e.target.value;
+        });
+        vThreshSlider.addEventListener('input', (e) => {
+            document.getElementById('vValue').textContent = e.target.value;
+        });
+        sThreshSlider.addEventListener('input', (e) => {
+            document.getElementById('sValue').textContent = e.target.value;
+        });
+        fixedKInput.addEventListener('input', (e) => {
+            const val = e.target.value;
+            document.getElementById('kValue').textContent = val === '0' ? 'Auto' : val;
+        });
+        
+        // Image upload
+        imageInput.addEventListener('change', (e) => {
+            const file = e.target.files[0];
+            if (file) {
+                const reader = new FileReader();
+                reader.onload = (event) => {
+                    const img = new Image();
+                    img.onload = () => {
+                        state.image = img;
+                        previewImg.src = img.src;
+                        previewBox.classList.remove('hidden');
+                    };
+                    img.src = event.target.result;
+                };
+                reader.readAsDataURL(file);
+            }
+        });
+        
+        // Analyze button
+        analyzeBtn.addEventListener('click', analyze);
+        resetBtn.addEventListener('click', reset);
+        downloadBtn.addEventListener('click', downloadCSV);
+        
+        async function analyze() {
+            if (!state.image) {
+                showError('Bitte wähle zuerst ein Bild aus');
+                return;
+            }
+            
+            analyzeBtn.disabled = true;
+            document.getElementById('loading').classList.remove('hidden');
+            document.getElementById('results').classList.add('hidden');
+            document.getElementById('welcomeInfo').classList.add('hidden');
+            clearError();
+            
+            try {
+                const startTime = performance.now();
+                
+                // Get parameters
+                const diameter = parseInt(diameterSlider.value);
+                const scale = parseInt(scaleSlider.value);
+                const vThresh = parseInt(vThreshSlider.value);
+                const sThresh = parseInt(sThreshSlider.value);
+                const fixedK = parseInt(fixedKInput.value);
+                
+                // Simulated analysis (in real implementation, this would use WebAssembly or server backend)
+                // For now, show mock results
+                await new Promise(resolve => setTimeout(resolve, 1500));
+                
+                const elapsed = ((performance.now() - startTime) / 1000).toFixed(2);
+                
+                // Mock results
+                const mockResults = {
+                    blobsDetected: Math.floor(Math.random() * 50000) + 30000,
+                    clustersFound: fixedK > 0 ? fixedK : Math.floor(Math.random() * 5) + 1,
+                    elapsed: elapsed,
+                    clusters: generateMockClusters(fixedK > 0 ? fixedK : 3)
+                };
+                
+                displayResults(mockResults);
+                state.results = mockResults;
+                
+            } catch (error) {
+                showError('Fehler bei der Analyse: ' + error.message);
+            } finally {
+                analyzeBtn.disabled = false;
+                document.getElementById('loading').classList.add('hidden');
+            }
+        }
+        
+        function generateMockClusters(count) {
+            const clusters = [];
+            const colors = [
+                {r: 160, g: 240, b: 231},
+                {r: 200, g: 150, b: 100},
+                {r: 100, g: 200, b: 150}
+            ];
+            
+            let totalPoints = 0;
+            for (let i = 0; i < count; i++) {
+                const color = colors[i % colors.length];
+                const points = Math.floor(Math.random() * 30000) + 5000;
+                totalPoints += points;
+                clusters.push({
+                    id: i,
+                    rgb: color,
+                    hex: `#${color.r.toString(16).padStart(2,'0')}${color.g.toString(16).padStart(2,'0')}${color.b.toString(16).padStart(2,'0')}`,
+                    points: points
+                });
+            }
+            
+            // Recalculate percentages
+            clusters.forEach(c => {
+                c.percent = ((c.points / totalPoints) * 100).toFixed(1);
+            });
+            
+            return clusters;
+        }
+        
+        function displayResults(results) {
+            // Stats
+            const statsHtml = `
+                <div class="stat-card">
+                    <div class="stat-label">🎯 Punkte erkannt</div>
+                    <div class="stat-value">${results.blobsDetected.toLocaleString()}</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">🎨 Farben gefunden</div>
+                    <div class="stat-value">${results.clustersFound}</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">⏱️ Verarbeitungszeit</div>
+                    <div class="stat-value">${results.elapsed}s</div>
+                </div>
+            `;
+            document.getElementById('statsGrid').innerHTML = statsHtml;
+            
+            // Table
+            const rows = results.clusters.map(c => `
+                <tr>
+                    <td>${c.id}</td>
+                    <td><span class="color-swatch" style="background-color: ${c.hex}"></span></td>
+                    <td>(${c.rgb.r}, ${c.rgb.g}, ${c.rgb.b})</td>
+                    <td><code>${c.hex}</code></td>
+                    <td>${c.points.toLocaleString()}</td>
+                    <td>${c.percent}%</td>
+                </tr>
+            `).join('');
+            
+            document.getElementById('tableBody').innerHTML = rows;
+            document.getElementById('results').classList.remove('hidden');
+        }
+        
+        function downloadCSV() {
+            if (!state.results) return;
+            
+            let csv = 'ClusterID,Anzahl,R,G,B,HEX,Prozent\n';
+            state.results.clusters.forEach(c => {
+                csv += `${c.id},${c.points},${c.rgb.r},${c.rgb.g},${c.rgb.b},${c.hex},${c.percent}\n`;
+            });
+            
+            const blob = new Blob([csv], { type: 'text/csv' });
+            const url = window.URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = 'blob_analyse.csv';
+            a.click();
+            window.URL.revokeObjectURL(url);
+        }
+        
+        function reset() {
+            state.results = null;
+            document.getElementById('results').classList.add('hidden');
+            document.getElementById('welcomeInfo').classList.remove('hidden');
+        }
+        
+        function showError(message) {
+            const errorDiv = document.getElementById('errorContainer');
+            errorDiv.innerHTML = `<div class="error">❌ ${message}</div>`;
+        }
+        
+        function clearError() {
+            document.getElementById('errorContainer').innerHTML = '';
+        }
+    </script>
+</body>
+</html>

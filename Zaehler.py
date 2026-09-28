@@ -1,4 +1,4 @@
-import sys, time
+        import sys, time
 #print(sys.executable)
 
 import cv2
@@ -124,9 +124,9 @@ diameter=args.dia
 
 
 if args.img is None:
-    img_path + str(input("Pfad zum Bild:"))
+    img_path = str(input("Pfad zum Bild:"))
 else:
-    img_path is args.img
+    img_path = args.img
 
 scale=1/args.scale
 v_thresh=254
