@@ -4,6 +4,7 @@ Performance-optimierte Streamlit Web-GUI für Zaehler.py / Blob-Analyzer
 - Parallele DoG-Berechnung auf allen CPU-Kernen
 - Extrem schnelles OpenCV-Rendering (statt lahmem Matplotlib)
 - Farbige Vorschau-Kästchen in den Ergebnistabellen
+- Aktualisiert für neuere Streamlit-Versionen (width='stretch')
 """
 
 import streamlit as st
@@ -21,7 +22,7 @@ import time
 
 # Page config
 st.set_page_config(
-    page_title="Blob- & Farbzähler (Fast)",
+    page_title="Blob- & Farbzähler (High-Performance)",
     page_icon="⚡",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -129,7 +130,6 @@ def parallel_blob_dog(img, min_sigma, max_sigma, threshold, n_jobs=-1):
 
     # Duplikate durch Overlap entfernen
     if len(blobs) > 0:
-        # Einfache Entfernung zu naher Blobs
         keep = []
         spatial_tree = {}
         for idx, (y, x, r) in enumerate(blobs):
@@ -144,7 +144,6 @@ def parallel_blob_dog(img, min_sigma, max_sigma, threshold, n_jobs=-1):
 
 def render_blobs_opencv(img_bg, blobs, labels, cluster_colours_255):
     """ Extrem schnelles Zeichnen der Punkte mit OpenCV """
-    # Bild in 3-Kanal BGR/RGB umwandeln
     if len(img_bg.shape) == 2:
         img_out = cv2.cvtColor((img_bg * 255).astype(np.uint8), cv2.COLOR_GRAY2BGR)
     else:
@@ -203,7 +202,7 @@ if uploaded_file is not None:
         col1, col2 = st.columns([1, 1])
         with col1:
             st.subheader("📸 Original-Bild")
-            st.image(cv2.cvtColor(img, cv2.COLOR_BGR2RGB), use_container_width=True)
+            st.image(cv2.cvtColor(img, cv2.COLOR_BGR2RGB), width="stretch")
 
         with col2:
             st.subheader("📊 Bild- & System-Info")
@@ -214,7 +213,7 @@ if uploaded_file is not None:
             - **Verfügbare CPU-Kerne:** {cpu_cores} (genutzt: {n_jobs})
             """)
 
-        if st.button("▶ ANALYSE STARTEN", key="analyze", use_container_width=True):
+        if st.button("▶ ANALYSE STARTEN", key="analyze", width="stretch"):
             with st.spinner(f"⏳ Analysiere Bild parallel auf {n_jobs} CPU-Kernen..."):
                 start_time = time.time()
 
@@ -304,9 +303,8 @@ if uploaded_file is not None:
 
             with col_left:
                 st.subheader("📍 Schnelle Vorschau (OpenCV)")
-                # Blitzschnelles Rendering
                 rendered_img = render_blobs_opencv(img_mono_inv, blobs, labels, cluster_colours_255)
-                st.image(rendered_img, use_container_width=True)
+                st.image(rendered_img, width="stretch")
 
             with col_right:
                 st.subheader("🎨 Farbcluster (mit Farbfeldern)")
@@ -331,22 +329,19 @@ if uploaded_file is not None:
 
                 df_clusters = pd.DataFrame(cluster_data)
 
-                # FARBLICHE GESTALTUNG DER TABELLE
                 def style_color_column(val):
-                    # Hex-Farbwert parsen
                     if isinstance(val, str) and val.startswith("#"):
                         hex_val = val.lstrip("#")
                         r, g, b = tuple(int(hex_val[i:i+2], 16) for i in (0, 2, 4))
-                        # Textfarbe für guten Kontrast berechnen (Helligkeit YIQ)
                         yiq = ((r * 299) + (g * 587) + (b * 114)) / 1000
                         text_color = "#000000" if yiq >= 128 else "#FFFFFF"
                         return f"background-color: {val}; color: {text_color}; font-weight: bold; text-align: center;"
                     return ""
 
                 styled_df = df_clusters.style.map(style_color_column, subset=["Farbe (HEX)"])
-                st.dataframe(styled_df, use_container_width=True)
+                st.dataframe(styled_df, width="stretch")
 
-                # CSV Download (Reiner Text)
+                # CSV Download
                 csv_buffer = io.StringIO()
                 df_clusters.to_csv(csv_buffer, index=False)
                 st.download_button(
@@ -354,7 +349,7 @@ if uploaded_file is not None:
                     data=csv_buffer.getvalue(),
                     file_name=f"cluster_ausgabe_{time.strftime('%Y%m%d_%H%M%S')}.csv",
                     mime="text/csv",
-                    use_container_width=True
+                    width="stretch"
                 )
 
             if show_all_pts:
@@ -374,7 +369,7 @@ if uploaded_file is not None:
 
                 df_raw = pd.DataFrame(raw_data)
                 styled_df_raw = df_raw.style.map(style_color_column, subset=["Farbe (HEX)"])
-                st.dataframe(styled_df_raw, use_container_width=True)
+                st.dataframe(styled_df_raw, width="stretch")
 
 else:
     st.info("Bitte lade in der linken Seitenleiste ein Bild hoch, um die geglättete Analyse zu starten.")
